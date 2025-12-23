@@ -1,103 +1,348 @@
+"use client";
+
+import { useState, useEffect, useMemo } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import GoogleLoginModal from "@/components/LoginModal";
+import EditorModal from "@/components/EditorModal";
+import { useUser } from "@/contexts/UserContext";
 import Image from "next/image";
+import Profile from "@/components/ProfilePage";
+import Welcome from "@/components/WelcomePage";
+import debounce from "lodash.debounce";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import oneDark from "react-syntax-highlighter/dist/esm/styles/prism/one-dark";
 
-export default function Home() {
+type Post = {
+  id: string;
+  title: string;
+  content: string;
+  user_id?: string;
+};
+type PostSummary = Pick<Post, "id" | "title">;
+
+type Pagination = {
+  page: number;
+  totalPages: number;
+};
+
+// ✅ コードブロックコンポーネント
+function CodeBlock({ code, language }: { code: string; language: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <div className="relative my-6 group">
+      {/* コピー ボタン */}
+      <button
+        onClick={handleCopy}
+        className="absolute top-2 right-2 px-2 py-1 text-xs rounded bg-slate-700 text-slate-200 opacity-0 group-hover:opacity-100 transition"
+      >
+        {copied ? "Copied!" : "Copy"}
+      </button>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+      {/* ハイライト */}
+      <SyntaxHighlighter
+        language={language}
+        style={oneDark}
+        PreTag="div"
+        customStyle={{
+          background: "#1e293b", // Tailwind slate-900
+          borderRadius: "0.5rem",
+          padding: "1rem",
+        }}
+        codeTagProps={{
+          style: {
+            background: "none",
+            fontSize: "0.875rem",
+            fontFamily:
+              "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+          },
+        }}
+        className="overflow-x-auto text-sm"
+      >
+        {code}
+      </SyntaxHighlighter>
+    </div>
+  );
+}
+
+export default function App() {
+  const [posts, setPosts] = useState<PostSummary[]>([]);
+  const [selectedPost, setSelectedPost] = useState<Post | null>(null);
+  const [search, setSearch] = useState("");
+  const [myNotesMode, setMyNotesMode] = useState(false);
+  const [isOpen, setIsOpen] = useState(false);
+  const [openEditor, setOpenEditor] = useState(false);
+  const [page, setPage] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+  // const [pagination, setPagination] = useState<Pagination>();
+
+  const { currentUser, setCurrentUser } = useUser();
+  const backend = process.env.NEXT_PUBLIC_BACKEND_URL;
+
+  // --- 非同期 API 呼び出し ---
+  const fetchPosts = async (
+    search: string,
+    myNotesMode: boolean,
+    userId?: string,
+    page = 0
+  ) => {
+    const query = new URLSearchParams();
+    if (search) query.set("search", search);
+    if (myNotesMode && userId) query.set("userId", userId);
+    query.set("page", page.toString());
+    query.set("pageSize", "50");
+
+    const res = await fetch(`${backend}/posts?${query.toString()}`);
+    if (!res.ok) throw new Error("Failed to fetch posts");
+
+    return (await res.json()) as {
+      posts: PostSummary[];
+      totalPages: number;
+      currentPage: number;
+    };
+  };
+
+  const loadPost = async (id: string) => {
+    try {
+      const res = await fetch(`${backend}/posts/${id}`);
+      if (!res.ok) throw new Error("投稿の取得に失敗");
+      const data = (await res.json()) as Post;
+      setSelectedPost(data);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const debouncedSearch = useMemo(() => {
+    return debounce(async (q: string, notesMode: boolean, userId?: string, page = 0) => {
+      try {
+        const data = await fetchPosts(q, notesMode, userId, page);
+        setPosts(data.posts);
+        setTotalPages(data.totalPages);
+        setPage(data.currentPage);
+      } catch (err) {
+        console.error(err);
+      }
+    }, 300);
+  }, []);
+
+  useEffect(() => {
+    if (search || myNotesMode) {
+      debouncedSearch(search, myNotesMode, currentUser?.id);
+    } else {
+      setPosts([]);
+    }
+  }, [search, myNotesMode, currentUser?.id]);
+
+  useEffect(() => {
+    return () => {
+      debouncedSearch.cancel();
+    };
+  }, [debouncedSearch]);
+
+  // --- UI ---
+  const handleLogout = () => {
+    localStorage.removeItem("token");
+    setCurrentUser(null);
+    setIsOpen(false);
+  };
+
+  const handleSaved = (post: any) => {
+    setPosts((prev) => [post, ...prev]);
+    setSelectedPost(post);
+  };
+
+  return (
+    <div className="flex flex-col h-screen">
+      {/* Header */}
+      <header className="flex justify-between items-center p-4 border-b border-foreground/10">
+        <h1 className="text-xl font-bold">Livra</h1>
+        <div className="flex gap-3 items-center">
+          {currentUser ? (
+            <>
+              <button
+                onClick={() => setOpenEditor(true)}
+                className="px-3 py-1 rounded-full bg-blue-500 text-white hover:bg-blue-600 transition"
+              >
+                投稿する
+              </button>
+
+              <EditorModal
+                isOpen={openEditor}
+                onClose={() => setOpenEditor(false)}
+                onSaved={handleSaved}
+              />
+
+              <button
+                onClick={() => {
+                  setMyNotesMode(!myNotesMode);
+                  setSearch("");
+                  setPosts([]);
+                  setSelectedPost(null);
+                }}
+                className="px-3 py-1 rounded-full bg-blue-400 text-white hover:bg-blue-500 transition"
+              >
+                {myNotesMode ? "みんなのメモ" : "自分のメモ"}
+              </button>
+
+              <div className="relative">
+                <Image
+                  src={currentUser.avatarUrl}
+                  alt="user"
+                  width={36}
+                  height={36}
+                  className="rounded-full cursor-pointer"
+                  onClick={() => setIsOpen(!isOpen)}
+                />
+                {isOpen && (
+                  <>
+                    <div
+                      className="absolute right-0 top-full mt-2 w-36 bg-blue-500 rounded shadow-lg z-50"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        onClick={handleLogout}
+                        className="w-full px-4 py-2 text-left text-white hover:bg-blue-600 transition rounded-t"
+                      >
+                        ログアウト
+                      </button>
+                    </div>
+                    <div
+                      className="fixed inset-0 z-40"
+                      onClick={() => setIsOpen(false)}
+                    />
+                  </>
+                )}
+              </div>
+            </>
+          ) : (
+            <GoogleLoginModal triggerText="ログイン" />
+          )}
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
+      </header>
+
+      {/* Main */}
+      <div className="flex flex-1 divide-x divide-foreground/10">
+        {/* Sidebar */}
+        <aside className="w-[25%] p-4 flex flex-col">
+          <input
+            type="text"
+            placeholder={myNotesMode ? "自分のメモを検索..." : "検索..."}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="p-2 border border-foreground/10 rounded mb-4 focus:ring-2 focus:ring-blue-300 outline-none"
           />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+          <div className="flex-1 overflow-y-auto space-y-1">
+            {posts.map((post) => (
+              <button
+                key={post.id}
+                onClick={async () => {
+                  await loadPost(post.id);
+                }}
+                className="block text-left font-bold w-full p-2 rounded hover:bg-blue-500"
+              >
+                {post.title}
+              </button>
+            ))}
+          </div>
+
+          {/* Pagination */}
+          {search || myNotesMode ? (
+            <div className="flex justify-center items-center mt-4 space-x-2">
+              {Array.from({ length: totalPages }, (_, i) => i)
+                .filter((i) => i === 0 || i === totalPages - 1 || (i >= page - 1 && i <= page + 1))
+                .map((i, idx, arr) => {
+                  const prev = arr[idx - 1];
+                  const showEllipsis = prev !== undefined && i - prev > 1;
+                  return (
+                    <span key={i} className="flex items-center">
+                      {showEllipsis && <span className="px-2">…</span>}
+                      <button
+                        onClick={() => setPage(i)}
+                        className={`w-8 h-8 flex items-center justify-center rounded-full ${
+                          page === i
+                            ? "bg-blue-500 text-white"
+                            : "bg-slate-700 text-slate-200 hover:bg-slate-600"
+                        }`}
+                      >
+                        {i + 1}
+                      </button>
+                    </span>
+                  );
+                })}
+            </div>
+          ) : null}
+        </aside>
+
+        {/* Content */}
+        <main className="w-[75%] p-6 overflow-y-auto">
+          {selectedPost ? (
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                code({ inline, className, children, ...props }: any) {
+                  const match = /language-(\w+)/.exec(className || "");
+                  if (!inline && match) {
+                    return (
+                      <CodeBlock
+                        code={String(children).replace(/\n$/, "")}
+                        language={match[1]}
+                      />
+                    );
+                  }
+                  return (
+                    <code className="bg-slate-800 text-pink-400 px-1 py-0.5 rounded text-sm" {...props}>
+                      {children}
+                    </code>
+                  );
+                },
+
+                h1: ({ node, ...props }) => (
+                  <h1 className="text-3xl font-bold mt-12 mb-6 leading-tight" {...props} />
+                ),
+                h2: ({ node, ...props }) => (
+                  <h2 className="text-2xl font-semibold mt-10 mb-5 border-b border-slate-600 pb-1 leading-snug" {...props} />
+                ),
+                h3: ({ node, ...props }) => (
+                  <h3 className="text-xl font-semibold mt-8 mb-4 leading-snug" {...props} />
+                ),
+                p: ({ node, ...props }) => (
+                  <p className="my-4 leading-relaxed text-base" {...props} />
+                ),
+                a: ({ node, ...props }) => (
+                  <a className="text-blue-400 hover:underline break-words" {...props} />
+                ),
+                blockquote: ({ node, ...props }) => (
+                  <blockquote className="border-l-4 border-slate-500 pl-4 italic my-6 bg-slate-800 text-white" {...props} />
+                ),
+                ul: ({ node, ...props }) => (
+                  <ul className="list-disc pl-8 my-4 space-y-1" {...props} />
+                ),
+                ol: ({ node, ...props }) => (
+                  <ol className="list-decimal pl-8 my-4 space-y-1" {...props} />
+                ),
+                img: ({ node, ...props }) => (
+                  <img className="max-w-full rounded-lg my-6 mx-auto shadow-sm" {...props} />
+                ),
+                hr: ({ node, ...props }) => <hr className="my-8 border-slate-600" {...props} />,
+              }}
+            >
+              {selectedPost.content}
+            </ReactMarkdown>
+          ) : myNotesMode ? (
+            <Profile />
+          ) : (
+            <Welcome />
+          )}
+        </main>
+      </div>
     </div>
   );
 }
