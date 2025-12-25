@@ -21,7 +21,7 @@ export default function GoogleLoginModal({ triggerText = "ログイン" }: Googl
   const handleGoogleSuccess = async (credentialResponse: any) => {
     try {
       const idToken = credentialResponse.credential;
-      const res = await axios.post(`${backend}/auth/google`, { token: idToken });
+      const res = await axios.post(`${backend}/auth/google_oauth2`, { token: idToken });
 
       localStorage.setItem("token", res.data.access_token);
 

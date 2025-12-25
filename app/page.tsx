@@ -95,7 +95,7 @@ export default function App() {
   ) => {
     const query = new URLSearchParams();
     if (search) query.set("search", search);
-    if (myNotesMode && userId) query.set("userId", userId);
+    if (myNotesMode && userId) query.set("user_id", userId);
     query.set("page", page.toString());
     query.set("pageSize", "50");
 
@@ -111,6 +111,7 @@ export default function App() {
 
   const loadPost = async (id: string) => {
     try {
+      console.log("Loading post:", id);
       const res = await fetch(`${backend}/posts/${id}`);
       if (!res.ok) throw new Error("投稿の取得に失敗");
       const data = (await res.json()) as Post;
